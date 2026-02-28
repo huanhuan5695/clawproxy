@@ -3,7 +3,9 @@
 set -euo pipefail
 
 APP_NAME="clawproxy"
-OUTPUT_DIR="dist"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+OUTPUT_DIR="$PROJECT_ROOT/dist"
 TARGET_OS="${1:-}"
 TARGET_ARCH="${2:-}"
 
@@ -102,10 +104,14 @@ fi
 
 OUTPUT_FILE="$OUTPUT_DIR/${APP_NAME}-${GOOS_VALUE}-${GOARCH_VALUE}${EXT}"
 
+echo "项目目录: $PROJECT_ROOT"
 echo "开始构建: GOOS=$GOOS_VALUE GOARCH=$GOARCH_VALUE"
 echo "输出文件: $OUTPUT_FILE"
 
-CGO_ENABLED=0 GOOS="$GOOS_VALUE" GOARCH="$GOARCH_VALUE" \
-  go build -o "$OUTPUT_FILE" .
+(
+  cd "$PROJECT_ROOT"
+  CGO_ENABLED=0 GOOS="$GOOS_VALUE" GOARCH="$GOARCH_VALUE" \
+    go build -o "$OUTPUT_FILE" .
+)
 
 echo "构建完成: $OUTPUT_FILE"
