@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -44,7 +46,7 @@ func TestHandleWS_MissingDeviceID(t *testing.T) {
 }
 
 func TestHandleWS_InvalidJSONPayload(t *testing.T) {
-	exec := &fakeExecutor{output: "command output"}
+	exec := &fakeExecutor{output: `prefix {"result":"ok"} suffix`}
 	srv := NewWithExecutor(":0", exec)
 	ts := httptest.NewServer(srv.Engine())
 	defer ts.Close()
@@ -70,8 +72,8 @@ func TestHandleWS_InvalidJSONPayload(t *testing.T) {
 	}
 }
 
-func TestHandleWS_ExecutorErrorDoesNotSendErrorText(t *testing.T) {
-	exec := &fakeExecutor{output: "partial output", err: errors.New("boom")}
+func TestHandleWS_ExecutorErrorOnlyLogs(t *testing.T) {
+	exec := &fakeExecutor{output: `prefix {"partial":true} suffix`, err: errors.New("boom")}
 	srv := NewWithExecutor(":0", exec)
 	ts := httptest.NewServer(srv.Engine())
 	defer ts.Close()
@@ -87,17 +89,20 @@ func TestHandleWS_ExecutorErrorDoesNotSendErrorText(t *testing.T) {
 		t.Fatalf("write websocket message: %v", err)
 	}
 
-	_, message, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("read websocket message: %v", err)
+	_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	_, _, err = conn.ReadMessage()
+	if err == nil {
+		t.Fatalf("expected no websocket message on executor error")
 	}
-	if string(message) != "partial output" {
-		t.Fatalf("expected websocket message %q, got %q", "partial output", string(message))
+
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("expected timeout error, got %v", err)
 	}
 }
 
 func TestHandleWS_SuccessAndKeepConnection(t *testing.T) {
-	exec := &fakeExecutor{output: "command output"}
+	exec := &fakeExecutor{output: `before {"result":"ok"} after`}
 	srv := NewWithExecutor(":0", exec)
 	ts := httptest.NewServer(srv.Engine())
 	defer ts.Close()
@@ -117,8 +122,8 @@ func TestHandleWS_SuccessAndKeepConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read websocket message: %v", err)
 	}
-	if string(message) != "command output" {
-		t.Fatalf("expected websocket message %q, got %q", "command output", string(message))
+	if string(message) != `{"result":"ok"}` {
+		t.Fatalf("expected websocket message %q, got %q", `{"result":"ok"}`, string(message))
 	}
 
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"message":"world"}`)); err != nil {
@@ -129,8 +134,8 @@ func TestHandleWS_SuccessAndKeepConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read second websocket message: %v", err)
 	}
-	if string(secondMessage) != "command output" {
-		t.Fatalf("expected second websocket message %q, got %q", "command output", string(secondMessage))
+	if string(secondMessage) != `{"result":"ok"}` {
+		t.Fatalf("expected second websocket message %q, got %q", `{"result":"ok"}`, string(secondMessage))
 	}
 
 	if exec.gotDeviceID != "device-1" {

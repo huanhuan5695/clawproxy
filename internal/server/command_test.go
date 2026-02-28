@@ -23,3 +23,15 @@ func TestBuildOpenClawCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractJSONObject(t *testing.T) {
+	out := "normal logs... {\"answer\":\"ok\",\"code\":200} trailing"
+	jsonPart, err := extractJSONObject(out)
+	if err != nil {
+		t.Fatalf("extract json object: %v", err)
+	}
+
+	if jsonPart != `{"answer":"ok","code":200}` {
+		t.Fatalf("unexpected json part: %s", jsonPart)
+	}
+}

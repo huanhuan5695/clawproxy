@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -52,6 +53,35 @@ func (e OpenClawExecutor) Run(ctx context.Context, deviceID, message string) (st
 
 func buildOpenClawCommand(ctx context.Context, deviceID, message string) *exec.Cmd {
 	return exec.CommandContext(ctx, "openclaw", "agent", "--session-id", deviceID, "--message", message, "--json")
+}
+
+func extractJSONObject(raw string) (string, error) {
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '{' {
+			continue
+		}
+
+		decoder := json.NewDecoder(strings.NewReader(raw[i:]))
+		decoder.UseNumber()
+		var obj map[string]any
+		if err := decoder.Decode(&obj); err != nil {
+			continue
+		}
+
+		offset := decoder.InputOffset()
+		if offset <= 0 || i+int(offset) > len(raw) {
+			continue
+		}
+
+		candidate := strings.TrimSpace(raw[i : i+int(offset)])
+		if !json.Valid([]byte(candidate)) {
+			continue
+		}
+
+		return candidate, nil
+	}
+
+	return "", fmt.Errorf("json object not found in output")
 }
 
 type Server struct {
@@ -131,20 +161,24 @@ func (s *Server) handleWS(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
 		output, runErr := s.executor.Run(ctx, deviceID, req.Message)
 		cancel()
+
+		if output != "" {
+			log.Printf("[server] full command output session_id=%s: %s", deviceID, output)
+		}
+
 		if runErr != nil {
 			log.Printf("[server] executor failed session_id=%s err=%v", deviceID, runErr)
-			if output != "" {
-				log.Printf("[server] sending partial stdout despite executor error session_id=%s output_bytes=%d", deviceID, len(output))
-				if writeErr := conn.WriteMessage(websocket.TextMessage, []byte(output)); writeErr != nil {
-					log.Printf("[server] write websocket response failed session_id=%s err=%v", deviceID, writeErr)
-					return
-				}
-			}
 			continue
 		}
 
-		log.Printf("[server] sending response over websocket session_id=%s output_bytes=%d", deviceID, len(output))
-		if writeErr := conn.WriteMessage(websocket.TextMessage, []byte(output)); writeErr != nil {
+		jsonPayload, extractErr := extractJSONObject(output)
+		if extractErr != nil {
+			log.Printf("[server] failed to extract json from output session_id=%s err=%v", deviceID, extractErr)
+			continue
+		}
+
+		log.Printf("[server] sending extracted json over websocket session_id=%s bytes=%d", deviceID, len(jsonPayload))
+		if writeErr := conn.WriteMessage(websocket.TextMessage, []byte(jsonPayload)); writeErr != nil {
 			log.Printf("[server] write websocket response failed session_id=%s err=%v", deviceID, writeErr)
 			return
 		}
