@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,14 +27,27 @@ type wsRequest struct {
 func (e OpenClawExecutor) Run(ctx context.Context, deviceID, message string) (string, error) {
 	log.Printf("[executor] start openclaw command session_id=%s", deviceID)
 	cmd := buildOpenClawCommand(ctx, deviceID, message)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("[executor] openclaw command failed session_id=%s err=%v", deviceID, err)
-		return "", fmt.Errorf("run openclaw agent command: %w, output: %s", err, string(out))
+
+	var stdoutBuffer bytes.Buffer
+	var stderrBuffer bytes.Buffer
+	cmd.Stdout = &stdoutBuffer
+	cmd.Stderr = &stderrBuffer
+
+	err := cmd.Run()
+	stdout := stdoutBuffer.String()
+	stderr := stderrBuffer.String()
+
+	if stderr != "" {
+		log.Printf("[executor] openclaw command warning/error output session_id=%s stderr=%q", deviceID, stderr)
 	}
 
-	log.Printf("[executor] openclaw command finished session_id=%s output_bytes=%d", deviceID, len(out))
-	return string(out), nil
+	if err != nil {
+		log.Printf("[executor] openclaw command failed session_id=%s err=%v", deviceID, err)
+		return stdout, fmt.Errorf("run openclaw agent command: %w", err)
+	}
+
+	log.Printf("[executor] openclaw command finished session_id=%s output_bytes=%d", deviceID, len(stdout))
+	return stdout, nil
 }
 
 func buildOpenClawCommand(ctx context.Context, deviceID, message string) *exec.Cmd {
@@ -119,9 +133,12 @@ func (s *Server) handleWS(c *gin.Context) {
 		cancel()
 		if runErr != nil {
 			log.Printf("[server] executor failed session_id=%s err=%v", deviceID, runErr)
-			if writeErr := conn.WriteMessage(websocket.TextMessage, []byte(runErr.Error())); writeErr != nil {
-				log.Printf("[server] write websocket error failed session_id=%s err=%v", deviceID, writeErr)
-				return
+			if output != "" {
+				log.Printf("[server] sending partial stdout despite executor error session_id=%s output_bytes=%d", deviceID, len(output))
+				if writeErr := conn.WriteMessage(websocket.TextMessage, []byte(output)); writeErr != nil {
+					log.Printf("[server] write websocket response failed session_id=%s err=%v", deviceID, writeErr)
+					return
+				}
 			}
 			continue
 		}

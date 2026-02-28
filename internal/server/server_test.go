@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -66,6 +67,32 @@ func TestHandleWS_InvalidJSONPayload(t *testing.T) {
 
 	if string(message) != "invalid json payload" {
 		t.Fatalf("expected websocket message %q, got %q", "invalid json payload", string(message))
+	}
+}
+
+func TestHandleWS_ExecutorErrorDoesNotSendErrorText(t *testing.T) {
+	exec := &fakeExecutor{output: "partial output", err: errors.New("boom")}
+	srv := NewWithExecutor(":0", exec)
+	ts := httptest.NewServer(srv.Engine())
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"message":"hello"}`)); err != nil {
+		t.Fatalf("write websocket message: %v", err)
+	}
+
+	_, message, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read websocket message: %v", err)
+	}
+	if string(message) != "partial output" {
+		t.Fatalf("expected websocket message %q, got %q", "partial output", string(message))
 	}
 }
 
