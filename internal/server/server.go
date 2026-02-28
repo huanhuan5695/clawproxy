@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os/exec"
 	"time"
@@ -17,13 +19,20 @@ type CommandExecutor interface {
 
 type OpenClawExecutor struct{}
 
+type wsRequest struct {
+	Message string `json:"message"`
+}
+
 func (e OpenClawExecutor) Run(ctx context.Context, deviceID, message string) (string, error) {
+	log.Printf("[executor] start openclaw command session_id=%s", deviceID)
 	cmd := buildOpenClawCommand(ctx, deviceID, message)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		log.Printf("[executor] openclaw command failed session_id=%s err=%v", deviceID, err)
 		return "", fmt.Errorf("run openclaw agent command: %w, output: %s", err, string(out))
 	}
 
+	log.Printf("[executor] openclaw command finished session_id=%s output_bytes=%d", deviceID, len(out))
 	return string(out), nil
 }
 
@@ -58,31 +67,57 @@ func (s *Server) Engine() *gin.Engine {
 }
 
 func (s *Server) Run() error {
+	log.Printf("[server] starting websocket server addr=%s", s.addr)
 	return s.Engine().Run(s.addr)
 }
 
 func (s *Server) handleWS(c *gin.Context) {
 	deviceID := c.Query("deviceId")
-	message := c.Query("message")
-	if deviceID == "" || message == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId and message are required"})
+	if deviceID == "" {
+		log.Printf("[server] reject websocket request: missing deviceId")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
 		return
 	}
 
+	log.Printf("[server] websocket upgrade requested session_id=%s", deviceID)
 	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
+		log.Printf("[server] websocket upgrade failed session_id=%s err=%v", deviceID, err)
 		return
 	}
 	defer conn.Close()
 
+	log.Printf("[server] websocket connected session_id=%s", deviceID)
+	_, payload, err := conn.ReadMessage()
+	if err != nil {
+		log.Printf("[server] read websocket payload failed session_id=%s err=%v", deviceID, err)
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("read websocket message failed"))
+		return
+	}
+
+	var req wsRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		log.Printf("[server] invalid websocket json session_id=%s err=%v", deviceID, err)
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("invalid json payload"))
+		return
+	}
+	if req.Message == "" {
+		log.Printf("[server] empty message in websocket payload session_id=%s", deviceID)
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("message is required"))
+		return
+	}
+
+	log.Printf("[server] received websocket payload session_id=%s message_len=%d", deviceID, len(req.Message))
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
 	defer cancel()
 
-	output, err := s.executor.Run(ctx, deviceID, message)
+	output, err := s.executor.Run(ctx, deviceID, req.Message)
 	if err != nil {
+		log.Printf("[server] executor failed session_id=%s err=%v", deviceID, err)
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
 		return
 	}
 
+	log.Printf("[server] sending response over websocket session_id=%s output_bytes=%d", deviceID, len(output))
 	_ = conn.WriteMessage(websocket.TextMessage, []byte(output))
 }
