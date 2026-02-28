@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -17,10 +16,6 @@ type CommandExecutor interface {
 }
 
 type OpenClawExecutor struct{}
-
-type wsRequest struct {
-	Message string `json:"message"`
-}
 
 func (e OpenClawExecutor) Run(ctx context.Context, deviceID, message string) (string, error) {
 	cmd := buildOpenClawCommand(ctx, deviceID, message)
@@ -68,8 +63,9 @@ func (s *Server) Run() error {
 
 func (s *Server) handleWS(c *gin.Context) {
 	deviceID := c.Query("deviceId")
-	if deviceID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
+	message := c.Query("message")
+	if deviceID == "" || message == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId and message are required"})
 		return
 	}
 
@@ -79,26 +75,10 @@ func (s *Server) handleWS(c *gin.Context) {
 	}
 	defer conn.Close()
 
-	_, payload, err := conn.ReadMessage()
-	if err != nil {
-		_ = conn.WriteMessage(websocket.TextMessage, []byte("read websocket message failed"))
-		return
-	}
-
-	var req wsRequest
-	if err := json.Unmarshal(payload, &req); err != nil {
-		_ = conn.WriteMessage(websocket.TextMessage, []byte("invalid json payload"))
-		return
-	}
-	if req.Message == "" {
-		_ = conn.WriteMessage(websocket.TextMessage, []byte("message is required"))
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
 	defer cancel()
 
-	output, err := s.executor.Run(ctx, deviceID, req.Message)
+	output, err := s.executor.Run(ctx, deviceID, message)
 	if err != nil {
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
 		return
