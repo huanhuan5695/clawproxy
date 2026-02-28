@@ -12,7 +12,7 @@ func TestBuildOpenClawCommand(t *testing.T) {
 		t.Fatalf("expected command path %q, got %q", "openclaw", cmd.Path)
 	}
 
-	expectedArgs := []string{"openclaw", "agent", "--session-id", "dev-123", "--message", "hello world", "--thinking", "medium"}
+	expectedArgs := []string{"openclaw", "agent", "--session-id", "dev-123", "--message", "hello world", "--json"}
 	if len(cmd.Args) != len(expectedArgs) {
 		t.Fatalf("expected %d args, got %d: %#v", len(expectedArgs), len(cmd.Args), cmd.Args)
 	}

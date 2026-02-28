@@ -15,12 +15,12 @@ type fakeExecutor struct {
 	err    error
 
 	gotDeviceID string
-	gotMessage  string
+	gotMessages []string
 }
 
 func (f *fakeExecutor) Run(_ context.Context, deviceID, message string) (string, error) {
 	f.gotDeviceID = deviceID
-	f.gotMessage = message
+	f.gotMessages = append(f.gotMessages, message)
 	return f.output, f.err
 }
 
@@ -69,7 +69,7 @@ func TestHandleWS_InvalidJSONPayload(t *testing.T) {
 	}
 }
 
-func TestHandleWS_Success(t *testing.T) {
+func TestHandleWS_SuccessAndKeepConnection(t *testing.T) {
 	exec := &fakeExecutor{output: "command output"}
 	srv := NewWithExecutor(":0", exec)
 	ts := httptest.NewServer(srv.Engine())
@@ -90,12 +90,26 @@ func TestHandleWS_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read websocket message: %v", err)
 	}
-
 	if string(message) != "command output" {
 		t.Fatalf("expected websocket message %q, got %q", "command output", string(message))
 	}
 
-	if exec.gotDeviceID != "device-1" || exec.gotMessage != "hello" {
-		t.Fatalf("executor called with unexpected params: deviceID=%q, message=%q", exec.gotDeviceID, exec.gotMessage)
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"message":"world"}`)); err != nil {
+		t.Fatalf("write second websocket message: %v", err)
+	}
+
+	_, secondMessage, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read second websocket message: %v", err)
+	}
+	if string(secondMessage) != "command output" {
+		t.Fatalf("expected second websocket message %q, got %q", "command output", string(secondMessage))
+	}
+
+	if exec.gotDeviceID != "device-1" {
+		t.Fatalf("executor called with unexpected deviceID=%q", exec.gotDeviceID)
+	}
+	if len(exec.gotMessages) != 2 || exec.gotMessages[0] != "hello" || exec.gotMessages[1] != "world" {
+		t.Fatalf("executor called with unexpected messages: %#v", exec.gotMessages)
 	}
 }
