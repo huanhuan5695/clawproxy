@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"clawproxy/internal/auth"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
@@ -85,23 +86,29 @@ func extractJSONObject(raw string) (string, error) {
 }
 
 type Server struct {
-	addr     string
-	executor CommandExecutor
-	upgrader websocket.Upgrader
+	addr      string
+	jwtSecret []byte
+	executor  CommandExecutor
+	upgrader  websocket.Upgrader
 }
 
-func New(addr string) *Server {
+func New(addr, jwtSecret string) *Server {
 	return &Server{
-		addr:     addr,
-		executor: OpenClawExecutor{},
-		upgrader: websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }},
+		addr:      addr,
+		jwtSecret: []byte(jwtSecret),
+		executor:  OpenClawExecutor{},
+		upgrader:  websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }},
 	}
 }
 
-func NewWithExecutor(addr string, executor CommandExecutor) *Server {
-	s := New(addr)
+func NewWithExecutor(addr, jwtSecret string, executor CommandExecutor) *Server {
+	s := New(addr, jwtSecret)
 	s.executor = executor
 	return s
+}
+
+func (s *Server) validateToken(tokenStr string) error {
+	return auth.ValidateToken(s.jwtSecret, tokenStr)
 }
 
 func (s *Server) Engine() *gin.Engine {
@@ -120,6 +127,18 @@ func (s *Server) handleWS(c *gin.Context) {
 	if deviceID == "" {
 		log.Printf("[server] reject websocket request: missing deviceId")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
+		return
+	}
+	token := c.Query("token")
+	if token == "" {
+		log.Printf("[server] reject websocket request: missing token session_id=%s", deviceID)
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "TOKEN_REQUIRED", "error": "token is required"})
+		return
+	}
+
+	if err := s.validateToken(token); err != nil {
+		log.Printf("[server] reject websocket request: invalid token session_id=%s err=%v", deviceID, err)
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "INVALID_TOKEN", "error": "token validation failed"})
 		return
 	}
 
