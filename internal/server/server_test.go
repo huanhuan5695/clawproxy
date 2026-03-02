@@ -10,8 +10,21 @@ import (
 	"testing"
 	"time"
 
+	"clawproxy/internal/auth"
 	"github.com/gorilla/websocket"
 )
+
+const testJWTSecret = "unit-test-secret"
+
+func mustCreateToken(t *testing.T) string {
+	t.Helper()
+	tokenString, err := auth.GenerateToken([]byte(testJWTSecret), "device-1", time.Hour)
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+
+	return tokenString
+}
 
 type fakeExecutor struct {
 	output string
@@ -29,7 +42,7 @@ func (f *fakeExecutor) Run(_ context.Context, deviceID, message string) (string,
 
 func TestHandleWS_MissingDeviceID(t *testing.T) {
 	exec := &fakeExecutor{}
-	srv := NewWithExecutor(":0", exec)
+	srv := NewWithExecutor(":0", testJWTSecret, exec)
 	r := srv.Engine()
 
 	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
@@ -45,13 +58,49 @@ func TestHandleWS_MissingDeviceID(t *testing.T) {
 	}
 }
 
+func TestHandleWS_MissingToken(t *testing.T) {
+	exec := &fakeExecutor{}
+	srv := NewWithExecutor(":0", testJWTSecret, exec)
+	r := srv.Engine()
+
+	req := httptest.NewRequest(http.MethodGet, "/ws?deviceId=device-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, w.Code)
+	}
+
+	if !strings.Contains(w.Body.String(), "TOKEN_REQUIRED") {
+		t.Fatalf("unexpected response body: %s", w.Body.String())
+	}
+}
+
+func TestHandleWS_InvalidToken(t *testing.T) {
+	exec := &fakeExecutor{}
+	srv := NewWithExecutor(":0", testJWTSecret, exec)
+	r := srv.Engine()
+
+	req := httptest.NewRequest(http.MethodGet, "/ws?deviceId=device-1&token=bad-token", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, w.Code)
+	}
+
+	if !strings.Contains(w.Body.String(), "INVALID_TOKEN") {
+		t.Fatalf("unexpected response body: %s", w.Body.String())
+	}
+}
+
 func TestHandleWS_InvalidJSONPayload(t *testing.T) {
 	exec := &fakeExecutor{output: `prefix {"result":"ok"} suffix`}
-	srv := NewWithExecutor(":0", exec)
+	srv := NewWithExecutor(":0", testJWTSecret, exec)
 	ts := httptest.NewServer(srv.Engine())
 	defer ts.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1"
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1&token=" + mustCreateToken(t)
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
@@ -74,11 +123,11 @@ func TestHandleWS_InvalidJSONPayload(t *testing.T) {
 
 func TestHandleWS_ExecutorErrorOnlyLogs(t *testing.T) {
 	exec := &fakeExecutor{output: `prefix {"partial":true} suffix`, err: errors.New("boom")}
-	srv := NewWithExecutor(":0", exec)
+	srv := NewWithExecutor(":0", testJWTSecret, exec)
 	ts := httptest.NewServer(srv.Engine())
 	defer ts.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1"
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1&token=" + mustCreateToken(t)
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
@@ -103,11 +152,11 @@ func TestHandleWS_ExecutorErrorOnlyLogs(t *testing.T) {
 
 func TestHandleWS_SuccessAndKeepConnection(t *testing.T) {
 	exec := &fakeExecutor{output: `before {"result":"ok"} after`}
-	srv := NewWithExecutor(":0", exec)
+	srv := NewWithExecutor(":0", testJWTSecret, exec)
 	ts := httptest.NewServer(srv.Engine())
 	defer ts.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1"
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1&token=" + mustCreateToken(t)
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
