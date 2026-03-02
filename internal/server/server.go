@@ -129,9 +129,9 @@ func (s *Server) handleWS(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
 		return
 	}
-	token := c.Query("token")
+	token := c.GetHeader("Authorization")
 	if token == "" {
-		log.Printf("[server] reject websocket request: missing token session_id=%s", deviceID)
+		log.Printf("[server] reject websocket request: missing Authorization header session_id=%s", deviceID)
 		c.JSON(http.StatusUnauthorized, gin.H{"code": "TOKEN_REQUIRED", "error": "token is required"})
 		return
 	}

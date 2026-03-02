@@ -3,10 +3,10 @@ openclaw的外挂服务
 
 ## WebSocket 鉴权
 
-`/ws` 请求现在需要在 query 中携带两个参数：
+`/ws` 请求现在需要：
 
-- `deviceId`: 设备会话 ID
-- `token`: JWT token（HS256）
+- query 参数 `deviceId`: 设备会话 ID
+- header `Authorization`: JWT token（HS256）
 
 获取 token 的方式：
 
@@ -18,7 +18,8 @@ clawproxy --jwt-secret your-secret token --device-id device-1 --expires-in 1d
 连接示例：
 
 ```text
-ws://localhost:8080/ws?deviceId=device-1&token=<JWT_TOKEN>
+ws://localhost:8080/ws?deviceId=device-1
+Authorization: <JWT_TOKEN>
 ```
 
 当 token 缺失或校验失败时，服务会返回 `401`，并在响应中带错误码：

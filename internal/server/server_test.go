@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,21 @@ func mustCreateToken(t *testing.T) string {
 	}
 
 	return tokenString
+}
+
+func dialWS(t *testing.T, wsURL, token string) *websocket.Conn {
+	t.Helper()
+	headers := http.Header{}
+	if token != "" {
+		headers.Set("Authorization", token)
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+
+	return conn
 }
 
 type fakeExecutor struct {
@@ -81,7 +97,8 @@ func TestHandleWS_InvalidToken(t *testing.T) {
 	srv := NewWithExecutor(":0", testJWTSecret, exec)
 	r := srv.Engine()
 
-	req := httptest.NewRequest(http.MethodGet, "/ws?deviceId=device-1&token=bad-token", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ws?deviceId=device-1", nil)
+	req.Header.Set("Authorization", "bad-token")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -100,11 +117,8 @@ func TestHandleWS_InvalidJSONPayload(t *testing.T) {
 	ts := httptest.NewServer(srv.Engine())
 	defer ts.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1&token=" + mustCreateToken(t)
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("dial websocket: %v", err)
-	}
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1"
+	conn := dialWS(t, wsURL, mustCreateToken(t))
 	defer conn.Close()
 
 	if err := conn.WriteMessage(websocket.TextMessage, []byte("not-json")); err != nil {
@@ -127,11 +141,9 @@ func TestHandleWS_ExecutorErrorOnlyLogs(t *testing.T) {
 	ts := httptest.NewServer(srv.Engine())
 	defer ts.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1&token=" + mustCreateToken(t)
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("dial websocket: %v", err)
-	}
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1"
+	conn := dialWS(t, wsURL, mustCreateToken(t))
+	var err error
 	defer conn.Close()
 
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"message":"hello"}`)); err != nil {
@@ -156,11 +168,9 @@ func TestHandleWS_SuccessAndKeepConnection(t *testing.T) {
 	ts := httptest.NewServer(srv.Engine())
 	defer ts.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1&token=" + mustCreateToken(t)
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("dial websocket: %v", err)
-	}
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1"
+	conn := dialWS(t, wsURL, mustCreateToken(t))
+	var err error
 	defer conn.Close()
 
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"message":"hello"}`)); err != nil {
@@ -192,5 +202,51 @@ func TestHandleWS_SuccessAndKeepConnection(t *testing.T) {
 	}
 	if len(exec.gotMessages) != 2 || exec.gotMessages[0] != "hello" || exec.gotMessages[1] != "world" {
 		t.Fatalf("executor called with unexpected messages: %#v", exec.gotMessages)
+	}
+}
+
+func TestHandleWS_InvalidToken_WebSocketHandshake(t *testing.T) {
+	exec := &fakeExecutor{}
+	srv := NewWithExecutor(":0", testJWTSecret, exec)
+	ts := httptest.NewServer(srv.Engine())
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1"
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Authorization": []string{"bad-token"}})
+	if err == nil {
+		t.Fatal("expected websocket handshake failure with invalid token")
+	}
+	if resp == nil {
+		t.Fatal("expected http response on handshake failure")
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, resp.StatusCode)
+	}
+}
+
+func TestHandleWS_MissingToken_WebSocketHandshake(t *testing.T) {
+	exec := &fakeExecutor{}
+	srv := NewWithExecutor(":0", testJWTSecret, exec)
+	ts := httptest.NewServer(srv.Engine())
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?deviceId=device-1"
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("expected websocket handshake failure with missing token")
+	}
+	if resp == nil {
+		t.Fatal("expected http response on handshake failure")
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, resp.StatusCode)
+	}
+
+	if !strings.Contains(resp.Request.URL.String(), "/ws?deviceId=device-1") {
+		t.Fatalf("unexpected request url: %s", resp.Request.URL.String())
+	}
+
+	if _, err := url.Parse(resp.Request.URL.String()); err != nil {
+		t.Fatalf("parse request url: %v", err)
 	}
 }
