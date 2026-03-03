@@ -1,6 +1,36 @@
 # clawproxy
 openclaw的外挂服务
 
+## WebSocket 鉴权
+
+`/ws` 请求现在需要：
+
+- query 参数 `deviceId`: 设备会话 ID
+- header `Authorization`: JWT token（HS256）
+
+获取 token 的方式：
+
+```bash
+clawproxy --jwt-secret your-secret token --device-id device-1
+clawproxy --jwt-secret your-secret token --device-id device-1 --expires-in 1d
+```
+
+连接示例：
+
+```text
+ws://localhost:8080/ws?deviceId=device-1
+Authorization: <JWT_TOKEN>
+```
+
+当 token 缺失或校验失败时，服务会返回 `401`，并在响应中带错误码：
+
+- `TOKEN_REQUIRED`
+- `INVALID_TOKEN`
+
+`--expires-in` 现在按“天”计算，例如 `1d`、`7d`。不传该参数时，生成的 token 默认永久有效。
+
+服务端已启用 WebSocket 心跳检测：会周期性发送 `ping` 并通过 `pong` 自动续期连接，长时间无心跳响应的连接会被服务端断开。
+
 ## 打包脚本
 新增了一个可交互/可参数化的打包脚本：
 
