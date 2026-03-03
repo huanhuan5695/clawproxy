@@ -149,7 +149,9 @@ func (s *Server) handleWS(c *gin.Context) {
 		return
 	}
 
-	log.Printf("[server] websocket upgrade requested session_id=%s", deviceID)
+	clientIP := c.ClientIP()
+	connectedAt := time.Now().Format(time.RFC3339)
+	log.Printf("[server] websocket upgrade requested session_id=%s client_ip=%s at=%s", deviceID, clientIP, connectedAt)
 	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Printf("[server] websocket upgrade failed session_id=%s err=%v", deviceID, err)
@@ -157,7 +159,7 @@ func (s *Server) handleWS(c *gin.Context) {
 	}
 	defer conn.Close()
 
-	log.Printf("[server] websocket connected session_id=%s", deviceID)
+	log.Printf("[server] websocket connected session_id=%s client_ip=%s at=%s", deviceID, clientIP, connectedAt)
 	if err := conn.SetReadDeadline(time.Now().Add(wsPongWait)); err != nil {
 		log.Printf("[server] set initial read deadline failed session_id=%s err=%v", deviceID, err)
 		return
