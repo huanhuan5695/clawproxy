@@ -20,7 +20,7 @@ import (
 var (
 	wsWriteWait  = 10 * time.Second
 	wsPongWait   = 60 * time.Second
-	wsPingPeriod = 54 * time.Second
+	wsPingPeriod = 10 * time.Second
 )
 
 type CommandExecutor interface {
