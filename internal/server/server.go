@@ -9,10 +9,18 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
+	"clawproxy/internal/auth"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+)
+
+var (
+	wsWriteWait  = 10 * time.Second
+	wsPongWait   = 60 * time.Second
+	wsPingPeriod = 10 * time.Second
 )
 
 type CommandExecutor interface {
@@ -85,23 +93,29 @@ func extractJSONObject(raw string) (string, error) {
 }
 
 type Server struct {
-	addr     string
-	executor CommandExecutor
-	upgrader websocket.Upgrader
+	addr      string
+	jwtSecret []byte
+	executor  CommandExecutor
+	upgrader  websocket.Upgrader
 }
 
-func New(addr string) *Server {
+func New(addr, jwtSecret string) *Server {
 	return &Server{
-		addr:     addr,
-		executor: OpenClawExecutor{},
-		upgrader: websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }},
+		addr:      addr,
+		jwtSecret: []byte(jwtSecret),
+		executor:  OpenClawExecutor{},
+		upgrader:  websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }},
 	}
 }
 
-func NewWithExecutor(addr string, executor CommandExecutor) *Server {
-	s := New(addr)
+func NewWithExecutor(addr, jwtSecret string, executor CommandExecutor) *Server {
+	s := New(addr, jwtSecret)
 	s.executor = executor
 	return s
+}
+
+func (s *Server) validateToken(tokenStr string) error {
+	return auth.ValidateToken(s.jwtSecret, tokenStr)
 }
 
 func (s *Server) Engine() *gin.Engine {
@@ -116,14 +130,28 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) handleWS(c *gin.Context) {
+	clientIP := c.ClientIP()
 	deviceID := c.Query("deviceId")
 	if deviceID == "" {
-		log.Printf("[server] reject websocket request: missing deviceId")
+		log.Printf("[server] reject websocket request: missing deviceId client_ip=%s", clientIP)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
 		return
 	}
+	token := c.GetHeader("Authorization")
+	if token == "" {
+		log.Printf("[server] reject websocket request: missing Authorization header session_id=%s client_ip=%s", deviceID, clientIP)
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "TOKEN_REQUIRED", "error": "token is required"})
+		return
+	}
 
-	log.Printf("[server] websocket upgrade requested session_id=%s", deviceID)
+	if err := s.validateToken(token); err != nil {
+		log.Printf("[server] reject websocket request: invalid token session_id=%s client_ip=%s err=%v", deviceID, clientIP, err)
+		c.JSON(http.StatusUnauthorized, gin.H{"code": "INVALID_TOKEN", "error": "token validation failed"})
+		return
+	}
+
+	connectedAt := time.Now().Format(time.RFC3339)
+	log.Printf("[server] websocket upgrade requested session_id=%s client_ip=%s at=%s", deviceID, clientIP, connectedAt)
 	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Printf("[server] websocket upgrade failed session_id=%s err=%v", deviceID, err)
@@ -131,7 +159,50 @@ func (s *Server) handleWS(c *gin.Context) {
 	}
 	defer conn.Close()
 
-	log.Printf("[server] websocket connected session_id=%s", deviceID)
+	log.Printf("[server] websocket connected session_id=%s client_ip=%s at=%s", deviceID, clientIP, connectedAt)
+	if err := conn.SetReadDeadline(time.Now().Add(wsPongWait)); err != nil {
+		log.Printf("[server] set initial read deadline failed session_id=%s err=%v", deviceID, err)
+		return
+	}
+	conn.SetPongHandler(func(_ string) error {
+		return conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	})
+
+	var writeMu sync.Mutex
+	writeMessage := func(messageType int, data []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+
+		if err := conn.SetWriteDeadline(time.Now().Add(wsWriteWait)); err != nil {
+			return fmt.Errorf("set write deadline: %w", err)
+		}
+
+		if err := conn.WriteMessage(messageType, data); err != nil {
+			return fmt.Errorf("write websocket message: %w", err)
+		}
+
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(wsPingPeriod)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if err := writeMessage(websocket.PingMessage, []byte("ping")); err != nil {
+					log.Printf("[server] heartbeat ping failed session_id=%s err=%v", deviceID, err)
+					return
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+	defer close(done)
+
 	for {
 		_, payload, err := conn.ReadMessage()
 		if err != nil {
@@ -142,7 +213,7 @@ func (s *Server) handleWS(c *gin.Context) {
 		var req wsRequest
 		if err := json.Unmarshal(payload, &req); err != nil {
 			log.Printf("[server] invalid websocket json session_id=%s err=%v", deviceID, err)
-			if writeErr := conn.WriteMessage(websocket.TextMessage, []byte("invalid json payload")); writeErr != nil {
+			if writeErr := writeMessage(websocket.TextMessage, []byte("invalid json payload")); writeErr != nil {
 				log.Printf("[server] write websocket error failed session_id=%s err=%v", deviceID, writeErr)
 				return
 			}
@@ -150,7 +221,7 @@ func (s *Server) handleWS(c *gin.Context) {
 		}
 		if req.Message == "" {
 			log.Printf("[server] empty message in websocket payload session_id=%s", deviceID)
-			if writeErr := conn.WriteMessage(websocket.TextMessage, []byte("message is required")); writeErr != nil {
+			if writeErr := writeMessage(websocket.TextMessage, []byte("message is required")); writeErr != nil {
 				log.Printf("[server] write websocket error failed session_id=%s err=%v", deviceID, writeErr)
 				return
 			}
@@ -178,7 +249,7 @@ func (s *Server) handleWS(c *gin.Context) {
 		}
 
 		log.Printf("[server] sending extracted json over websocket session_id=%s bytes=%d", deviceID, len(jsonPayload))
-		if writeErr := conn.WriteMessage(websocket.TextMessage, []byte(jsonPayload)); writeErr != nil {
+		if writeErr := writeMessage(websocket.TextMessage, []byte(jsonPayload)); writeErr != nil {
 			log.Printf("[server] write websocket response failed session_id=%s err=%v", deviceID, writeErr)
 			return
 		}
