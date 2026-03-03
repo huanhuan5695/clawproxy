@@ -130,26 +130,26 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) handleWS(c *gin.Context) {
+	clientIP := c.ClientIP()
 	deviceID := c.Query("deviceId")
 	if deviceID == "" {
-		log.Printf("[server] reject websocket request: missing deviceId")
+		log.Printf("[server] reject websocket request: missing deviceId client_ip=%s", clientIP)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
 		return
 	}
 	token := c.GetHeader("Authorization")
 	if token == "" {
-		log.Printf("[server] reject websocket request: missing Authorization header session_id=%s", deviceID)
+		log.Printf("[server] reject websocket request: missing Authorization header session_id=%s client_ip=%s", deviceID, clientIP)
 		c.JSON(http.StatusUnauthorized, gin.H{"code": "TOKEN_REQUIRED", "error": "token is required"})
 		return
 	}
 
 	if err := s.validateToken(token); err != nil {
-		log.Printf("[server] reject websocket request: invalid token session_id=%s err=%v", deviceID, err)
+		log.Printf("[server] reject websocket request: invalid token session_id=%s client_ip=%s err=%v", deviceID, clientIP, err)
 		c.JSON(http.StatusUnauthorized, gin.H{"code": "INVALID_TOKEN", "error": "token validation failed"})
 		return
 	}
 
-	clientIP := c.ClientIP()
 	connectedAt := time.Now().Format(time.RFC3339)
 	log.Printf("[server] websocket upgrade requested session_id=%s client_ip=%s at=%s", deviceID, clientIP, connectedAt)
 	conn, err := s.upgrader.Upgrade(c.Writer, c.Request, nil)
